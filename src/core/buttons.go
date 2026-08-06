@@ -53,7 +53,6 @@ var OwnerBtn = cb("Owner", "help_owner", gotdbot.ButtonStyleDefault{})
 var DevsBtn = cb("Devs", "help_devs", gotdbot.ButtonStyleDefault{})
 var PlaylistBtn = cb("Playlist", "help_playlist", gotdbot.ButtonStyleDefault{})
 var AutoplayBtn = cb("Autoplay", "help_autoplay", gotdbot.ButtonStyleDefault{})
-
 var channelBtn = url("Updates", config.SupportChannel, gotdbot.ButtonStyleDefault{})
 var groupBtn = url("Group", config.SupportGroup, gotdbot.ButtonStyleDefault{})
 
@@ -132,7 +131,7 @@ func BackHelpMenuKeyboard() *gotdbot.ReplyMarkupInlineKeyboard {
 	return &gotdbot.ReplyMarkupInlineKeyboard{
 		Rows: [][]gotdbot.InlineKeyboardButton{
 			{HelpBtn, HomeBtn},
-			{CloseBtn, SourceCodeBtn},
+			{CloseBtn},
 		},
 	}
 }
@@ -147,7 +146,6 @@ func ControlButtons(mode string) *gotdbot.ReplyMarkupInlineKeyboard {
 	addToPlaylistBtn := cb("➕", "play_add_to_list", gotdbot.ButtonStylePrimary{})
 
 	switch mode {
-
 	case "play":
 		return &gotdbot.ReplyMarkupInlineKeyboard{
 			Rows: [][]gotdbot.InlineKeyboardButton{
@@ -198,7 +196,6 @@ func ControlButtons(mode string) *gotdbot.ReplyMarkupInlineKeyboard {
 }
 
 func AddMeMarkup(username string) *gotdbot.ReplyMarkupInlineKeyboard {
-
 	addMeBtn := url(
 		"Aᴅᴅ ᴍᴇ ᴛᴏ ʏᴏᴜʀ ɢʀᴏᴜᴘ",
 		fmt.Sprintf("https://t.me/%s?startgroup=true", username),
@@ -210,7 +207,6 @@ func AddMeMarkup(username string) *gotdbot.ReplyMarkupInlineKeyboard {
 			{addMeBtn},
 			{HelpBtn},
 			{channelBtn, groupBtn},
-			{SourceCodeBtn},
 		},
 	}
 }
