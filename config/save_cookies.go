@@ -1,9 +1,9 @@
 /*
  * TgMusicBot - Telegram Music Bot
- *  Copyright (c) 2025-2026 Ashok Shau
+ * Copyright (c) 2025-2026 Ashok Shau
  *
- *  Licensed under GNU GPL v3
- *  See https://github.com/AshokShau/TgMusicBot
+ * Licensed under GNU GPL v3
+ * See https://github.com/AshokShau/TgMusicBot
  */
 
 package config
@@ -26,11 +26,10 @@ var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
-// fetchContent downloads cookies from Pastebin, Batbin, or any direct TXT/text URL.
 func fetchContent(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", fmt.Errorf("empty cookie url")
+		return "", fmt.Errorf("empty cookie URL")
 	}
 
 	rawURL := normalizeCookieURL(raw)
@@ -47,12 +46,16 @@ func fetchContent(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to GET %s: %w", rawURL, err)
 	}
-	defer func(body io.ReadCloser) {
-		_ = body.Close()
-	}(resp.Body)
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("unexpected status %d for %s", resp.StatusCode, rawURL)
+		return "", fmt.Errorf(
+			"unexpected status %d for %s",
+			resp.StatusCode,
+			rawURL,
+		)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -68,64 +71,76 @@ func fetchContent(raw string) (string, error) {
 	return content, nil
 }
 
-// normalizeCookieURL converts supported paste URLs to raw URLs.
-// Direct text/txt URLs are returned unchanged.
 func normalizeCookieURL(raw string) string {
-	trimmed := strings.Trim(raw, "/")
-	parts := strings.Split(trimmed, "/")
-	id := parts[len(parts)-1]
+	raw = strings.TrimSpace(raw)
 
-	if strings.Contains(raw, "pastebin.com") && !strings.Contains(raw, "/raw/") {
-		return fmt.Sprintf("https://pastebin.com/raw/%s", id)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
 	}
 
-	if strings.Contains(raw, "batbin.me") && !strings.Contains(raw, "/raw/") {
-		return fmt.Sprintf("https://batbin.me/raw/%s", id)
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.Trim(parsed.Path, "/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 0 {
+		return raw
+	}
+
+	id := parts[len(parts)-1]
+	if id == "" {
+		return raw
+	}
+
+	switch host {
+	case "pastebin.com", "www.pastebin.com":
+		if !strings.HasPrefix(parsed.Path, "/raw/") {
+			return "https://pastebin.com/raw/" + id
+		}
+
+	case "batbin.me", "www.batbin.me":
+		if !strings.HasPrefix(parsed.Path, "/raw/") {
+			return "https://batbin.me/raw/" + id
+		}
 	}
 
 	return raw
 }
 
-// saveContent saves cookie text into src/cookies and returns the file path.
 func saveContent(rawURL, content string) (string, error) {
-	if err := os.MkdirAll(cookiesDr, 0755); err != nil {
-		return "", fmt.Errorf("failed to create cookies dir %s: %w", cookiesDr, err)
+	if err := os.MkdirAll(cookiesDr, 0750); err != nil {
+		return "", fmt.Errorf(
+			"failed to create cookies directory %s: %w",
+			cookiesDr,
+			err,
+		)
 	}
 
 	filename := cookieFilename(rawURL)
 	filePath := filepath.Join(cookiesDr, filename)
 
-	f, err := os.Create(filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create file %s: %w", filePath, err)
-	}
-	defer func(f *os.File) {
-		_ = f.Close()
-	}(f)
-
-	if _, err := f.WriteString(content); err != nil {
+	if err := os.WriteFile(filePath, []byte(content), 0600); err != nil {
 		return "", fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}
 
 	return filePath, nil
 }
 
-// cookieFilename creates a safe filename from URL.
-// Keeps .txt only once if URL already points to a txt file.
 func cookieFilename(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err == nil && parsed.Path != "" {
-		base := filepath.Base(parsed.Path)
-		base = strings.TrimSpace(base)
+		base := strings.TrimSpace(filepath.Base(parsed.Path))
 
-		if base != "." && base != "/" && base != "" {
+		if base != "" && base != "." && base != "/" {
 			base = sanitizeFilename(base)
 
-			if strings.EqualFold(filepath.Ext(base), ".txt") {
-				return base
-			}
+			if base != "" {
+				if strings.EqualFold(filepath.Ext(base), ".txt") {
+					return base
+				}
 
-			return base + ".txt"
+				return base + ".txt"
+			}
 		}
 	}
 
@@ -154,22 +169,30 @@ func cookieFilename(raw string) string {
 
 func sanitizeFilename(name string) string {
 	name = strings.TrimSpace(name)
-	name = strings.ReplaceAll(name, "\\", "_")
-	name = strings.ReplaceAll(name, "/", "_")
-	name = strings.ReplaceAll(name, ":", "_")
-	name = strings.ReplaceAll(name, "*", "_")
-	name = strings.ReplaceAll(name, "?", "_")
-	name = strings.ReplaceAll(name, "\"", "_")
-	name = strings.ReplaceAll(name, "<", "_")
-	name = strings.ReplaceAll(name, ">", "_")
-	name = strings.ReplaceAll(name, "|", "_")
-	name = strings.Trim(name, ".")
+
+	replacer := strings.NewReplacer(
+		"\\", "_",
+		"/", "_",
+		":", "_",
+		"*", "_",
+		"?", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+	)
+
+	name = replacer.Replace(name)
+	name = strings.Trim(name, ". ")
 
 	return name
 }
 
-// saveAllCookies downloads all URLs and stores paths in Conf.CookiesPath.
 func saveAllCookies(urls []string) {
+	CookiesPath = CookiesPath[:0]
+
+	seenPaths := make(map[string]struct{})
+
 	for _, rawURL := range urls {
 		rawURL = strings.TrimSpace(rawURL)
 		if rawURL == "" {
@@ -178,16 +201,41 @@ func saveAllCookies(urls []string) {
 
 		content, err := fetchContent(rawURL)
 		if err != nil {
-			slog.Info("Error fetching cookies from", "url", rawURL, "error", err)
+			slog.Error(
+				"Failed to fetch cookies",
+				"url",
+				rawURL,
+				"error",
+				err,
+			)
 			continue
 		}
 
 		path, err := saveContent(rawURL, content)
 		if err != nil {
-			slog.Info("Error saving cookies for", "url", rawURL, "error", err)
+			slog.Error(
+				"Failed to save cookies",
+				"url",
+				rawURL,
+				"error",
+				err,
+			)
 			continue
 		}
 
-		Conf.CookiesPath = append(Conf.CookiesPath, path)
+		if _, exists := seenPaths[path]; exists {
+			continue
+		}
+
+		seenPaths[path] = struct{}{}
+		CookiesPath = append(CookiesPath, path)
+
+		slog.Info(
+			"Cookies saved",
+			"url",
+			rawURL,
+			"path",
+			path,
+		)
 	}
 }
