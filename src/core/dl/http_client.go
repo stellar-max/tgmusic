@@ -9,7 +9,7 @@
 package dl
 
 import (
-	"ashokshau/tgmusic/config"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ashokshau/tgmusic/config"
 )
 
 const (
@@ -37,18 +39,22 @@ const (
 
 var client = &http.Client{
 	Timeout: defaultRequestTimeout,
+
 	Transport: &http.Transport{
 		TLSHandshakeTimeout: defaultConnectTimeout,
+
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		},
 
 		ResponseHeaderTimeout: defaultRequestTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
+
 		DialContext: (&net.Dialer{
 			Timeout:   defaultConnectTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
+
 		IdleConnTimeout:     90 * time.Second,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -56,30 +62,44 @@ var client = &http.Client{
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   true,
 	},
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 2 {
-			return fmt.Errorf("too many redirects (%d)", len(via))
+
+	CheckRedirect: func(
+		req *http.Request,
+		via []*http.Request,
+	) error {
+		if len(via) >= 5 {
+			return fmt.Errorf(
+				"too many redirects (%d)",
+				len(via),
+			)
 		}
+
 		return nil
 	},
 }
 
-// sendRequest performs an HTTP request with a given context, method, URL, body, and headers.
-func sendRequest(method, fullURL string, body io.Reader, headers map[string]string) (*http.Response, error) {
-	baseReq, err := http.NewRequest(method, fullURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create base request: %w", err)
-	}
+func sendRequest(
+	method string,
+	fullURL string,
+	body io.Reader,
+	headers map[string]string,
+) (*http.Response, error) {
+	var bodyData []byte
+	var err error
 
-	baseReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-	baseReq.Header.Set("Accept", "*/*")
-
-	for k, v := range headers {
-		baseReq.Header.Set(k, v)
+	if body != nil {
+		bodyData, err = io.ReadAll(body)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to read request body: %w",
+				err,
+			)
+		}
 	}
 
 	var resp *http.Response
 	var reqErr error
+
 	backoff := initialBackoff
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -88,153 +108,302 @@ func sendRequest(method, fullURL string, body io.Reader, headers map[string]stri
 			backoff *= 2
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)
-		req, err := http.NewRequestWithContext(ctx, method, fullURL, body)
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			defaultRequestTimeout,
+		)
+
+		var requestBody io.Reader
+
+		if bodyData != nil {
+			requestBody = bytes.NewReader(bodyData)
+		}
+
+		req, err := http.NewRequestWithContext(
+			ctx,
+			method,
+			fullURL,
+			requestBody,
+		)
 		if err != nil {
 			cancel()
-			reqErr = err
+
+			reqErr = fmt.Errorf(
+				"failed to create request: %w",
+				err,
+			)
+
 			break
 		}
-		req.Header = baseReq.Header.Clone()
+
+		req.Header.Set(
+			"User-Agent",
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "+
+				"AppleWebKit/537.36 (KHTML, like Gecko) "+
+				"Chrome/131.0.0.0 Safari/537.36",
+		)
+
+		req.Header.Set("Accept", "*/*")
+
+		for key, value := range headers {
+			if strings.TrimSpace(value) != "" {
+				req.Header.Set(key, value)
+			}
+		}
 
 		resp, reqErr = client.Do(req)
+
 		if reqErr == nil {
-			if resp.StatusCode < 500 {
-				resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+			if resp.StatusCode < http.StatusInternalServerError {
+				resp.Body = &cancelOnClose{
+					ReadCloser: resp.Body,
+					cancel:     cancel,
+				}
+
 				return resp, nil
 			}
+
+			_, _ = io.Copy(
+				io.Discard,
+				io.LimitReader(resp.Body, 64*1024),
+			)
+
+			_ = resp.Body.Close()
 			cancel()
-			if err = resp.Body.Close(); err != nil {
-				slog.Info("failed to close response body", "error", err)
-			}
-			reqErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		} else {
-			cancel()
-			if isTemporaryError(reqErr) {
-				slog.Info("Temporary error on", "attempt", attempt+1, "maxRetries", maxRetries, "error", reqErr)
-				continue
-			}
-			break // Do not retry on permanent errors
+
+			reqErr = fmt.Errorf(
+				"unexpected status code: %d",
+				resp.StatusCode,
+			)
+
+			continue
 		}
+
+		cancel()
+
+		if isTemporaryError(reqErr) {
+			slog.Info(
+				"Temporary HTTP request error",
+				"attempt", attempt+1,
+				"max_retries", maxRetries,
+				"error", reqErr,
+			)
+
+			continue
+		}
+
+		break
 	}
 
 	if reqErr == nil {
-		reqErr = fmt.Errorf("request failed after %d attempts", maxRetries)
+		reqErr = fmt.Errorf(
+			"request failed after %d attempts",
+			maxRetries,
+		)
 	}
 
-	errMsg := maskSensitiveInfo(reqErr.Error())
-	return nil, fmt.Errorf("request failed: %s", errMsg)
+	return nil, fmt.Errorf(
+		"request failed: %s",
+		maskSensitiveInfo(reqErr.Error()),
+	)
 }
 
-// maskSensitiveInfo removes the API key from error messages.
 func maskSensitiveInfo(msg string) string {
-	if config.ApiKey == "" {
+	if strings.TrimSpace(config.ApiKey) == "" {
 		return msg
 	}
-	return strings.ReplaceAll(msg, config.ApiKey, "REDACTED")
+
+	return strings.ReplaceAll(
+		msg,
+		config.ApiKey,
+		"REDACTED",
+	)
 }
 
-// isTemporaryError determines if an error is temporary and thus worth retrying.
 func isTemporaryError(err error) bool {
 	var netErr net.Error
+
 	if errors.As(err, &netErr) {
 		return netErr.Timeout() || netErr.Temporary()
 	}
+
 	return false
 }
 
-// generateUniqueName creates a pseudo-random filename using a combination of the current timestamp and a random number.
 func generateUniqueName(ext string) string {
-	n, _ := rand.Int(rand.Reader, big.NewInt(99999))
-	return fmt.Sprintf("%d_%05d%s", time.Now().UnixNano(), n.Int64(), ext)
+	n, err := rand.Int(
+		rand.Reader,
+		big.NewInt(99999),
+	)
+	if err != nil {
+		return fmt.Sprintf(
+			"%d%s",
+			time.Now().UnixNano(),
+			ext,
+		)
+	}
+
+	return fmt.Sprintf(
+		"%d_%05d%s",
+		time.Now().UnixNano(),
+		n.Int64(),
+		ext,
+	)
 }
 
-// determineFilename safely determines a valid filename for a download.
-func determineFilename(urlStr, contentDisp string) string {
+func determineFilename(
+	urlStr string,
+	contentDisp string,
+) string {
 	if filename := extractFilename(contentDisp); filename != "" {
-		return filepath.Join(config.DownloadsDir, sanitizeFilename(filename))
+		return filepath.Join(
+			config.DownloadsDir,
+			sanitizeFilename(filename),
+		)
 	}
 
 	if parsedURL, err := url.Parse(urlStr); err == nil {
 		filename := path.Base(parsedURL.Path)
-		if filename != "" && filename != "/" && !strings.Contains(filename, "?") {
-			return filepath.Join(config.DownloadsDir, sanitizeFilename(filename))
+
+		if filename != "" &&
+			filename != "/" &&
+			filename != "." &&
+			!strings.Contains(filename, "?") {
+			return filepath.Join(
+				config.DownloadsDir,
+				sanitizeFilename(filename),
+			)
 		}
 	}
 
-	return filepath.Join(config.DownloadsDir, generateUniqueName(".tmp"))
+	return filepath.Join(
+		config.DownloadsDir,
+		generateUniqueName(".tmp"),
+	)
 }
 
-// writeToFile writes data from an io.Reader to a specified file.
-func writeToFile(filename string, data io.Reader) error {
+func writeToFile(
+	filename string,
+	data io.Reader,
+) error {
 	out, err := os.Create(filename)
 	if err != nil {
-		return fmt.Errorf("failed to create the file: %w", err)
+		return fmt.Errorf(
+			"failed to create the file: %w",
+			err,
+		)
 	}
-	defer func(out *os.File) {
+
+	defer func() {
 		_ = out.Close()
-	}(out)
+	}()
 
 	if _, err := io.Copy(out, data); err != nil {
-		return fmt.Errorf("failed to write to the file: %w", err)
+		return fmt.Errorf(
+			"failed to write to the file: %w",
+			err,
+		)
 	}
 
 	return nil
 }
 
-// downloadFile downloads a file from a URL and saves it to a local path.
-func downloadFile(urlStr, fileName string, overwrite bool) (string, error) {
+func downloadFile(
+	urlStr string,
+	fileName string,
+	overwrite bool,
+) (string, error) {
 	if urlStr == "" {
-		return "", errors.New("an empty URL was provided")
+		return "", errors.New(
+			"an empty URL was provided",
+		)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		downloadTimeout,
+	)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		urlStr,
+		nil,
+	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create the request: %w", err)
+		return "", fmt.Errorf(
+			"failed to create the request: %w",
+			err,
+		)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("the request failed: %w", err)
+		return "", fmt.Errorf(
+			"the request failed: %w",
+			err,
+		)
 	}
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
+
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status code received: %d", resp.StatusCode)
+		return "", fmt.Errorf(
+			"unexpected status code received: %d",
+			resp.StatusCode,
+		)
 	}
 
 	if fileName == "" {
-		fileName = determineFilename(urlStr, resp.Header.Get("Content-Disposition"))
+		fileName = determineFilename(
+			urlStr,
+			resp.Header.Get("Content-Disposition"),
+		)
 	}
 
 	if !overwrite {
 		if _, err := os.Stat(fileName); err == nil {
-			return fileName, nil // File already exists, no need to download again.
+			return fileName, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf(
+				"failed to inspect existing file: %w",
+				err,
+			)
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(fileName), defaultDownloadDirPerm); err != nil {
-		return "", fmt.Errorf("failed to create the directory: %w", err)
+	if err := os.MkdirAll(
+		filepath.Dir(fileName),
+		defaultDownloadDirPerm,
+	); err != nil {
+		return "", fmt.Errorf(
+			"failed to create the directory: %w",
+			err,
+		)
 	}
 
 	tempPath := fileName + ".part"
+
 	if err := writeToFile(tempPath, resp.Body); err != nil {
+		_ = os.Remove(tempPath)
 		return "", err
 	}
 
 	if err := os.Rename(tempPath, fileName); err != nil {
-		return "", fmt.Errorf("failed to rename the temporary file: %w", err)
+		_ = os.Remove(tempPath)
+
+		return "", fmt.Errorf(
+			"failed to rename the temporary file: %w",
+			err,
+		)
 	}
 
 	return fileName, nil
 }
 
-// cancelOnClose cancels the request context after the response body is closed.
 type cancelOnClose struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -243,5 +412,6 @@ type cancelOnClose struct {
 func (c *cancelOnClose) Close() error {
 	err := c.ReadCloser.Close()
 	c.cancel()
+
 	return err
 }
