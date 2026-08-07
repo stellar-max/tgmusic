@@ -441,7 +441,7 @@ func (y *youTubeData) downloadWithApi(
 	}
 
 	expectedFormat := "mp3"
-	fileExtension := ".m4a"
+	fileExtension := ".mp3"
 
 	if video {
 		expectedFormat = "mp4"
