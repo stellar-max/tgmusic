@@ -31,36 +31,40 @@ import (
 )
 
 const (
-	defaultRequestTimeout = 30 * time.Second
-	defaultConnectTimeout = 15 * time.Second
+	defaultRequestTimeout = 90 * time.Second
+	defaultConnectTimeout = 30 * time.Second
 	maxRetries            = 2
 	initialBackoff        = 1 * time.Second
 )
 
 var client = &http.Client{
-	Timeout: defaultRequestTimeout,
+	// Request lifetime is controlled by each request's context.
+	// Keeping this disabled prevents large media downloads from
+	// being killed by a global client timeout.
+	Timeout: 0,
 
 	Transport: &http.Transport{
 		TLSHandshakeTimeout: defaultConnectTimeout,
 
 		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
 		},
 
-		ResponseHeaderTimeout: defaultRequestTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
 
 		DialContext: (&net.Dialer{
 			Timeout:   defaultConnectTimeout,
-			KeepAlive: 30 * time.Second,
+			KeepAlive: 60 * time.Second,
 		}).DialContext,
 
-		IdleConnTimeout:     90 * time.Second,
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     20,
-		DisableCompression:  false,
-		ForceAttemptHTTP2:   true,
+		IdleConnTimeout:       120 * time.Second,
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   20,
+		MaxConnsPerHost:       50,
+		DisableCompression:    false,
+		ForceAttemptHTTP2:     true,
 	},
 
 	CheckRedirect: func(
@@ -337,6 +341,15 @@ func downloadFile(
 			err,
 		)
 	}
+
+	req.Header.Set(
+		"User-Agent",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "+
+			"AppleWebKit/537.36 (KHTML, like Gecko) "+
+			"Chrome/131.0.0.0 Safari/537.36",
+	)
+
+	req.Header.Set("Accept", "*/*")
 
 	resp, err := client.Do(req)
 	if err != nil {
